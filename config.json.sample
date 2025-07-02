@@ -1,0 +1,7 @@
+{
+  "subscription_id": "<your-subscription-GUID>",
+  "resource_group":   "<the-resource-group-name>",
+  "workspace_name":   "<the-aml-workspace-name>",
+  "location":         "eastus"           ,
+  "tenant_id":        "<your-tenant-GUID>"
+}

@@ -1,0 +1,167 @@
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License.
+
+name: deploy-model-training-pipeline
+
+variables:
+  - ${{ if eq(variables['Build.SourceBranchName'], 'main') }}:
+      - template: ../../config-infra-prod.yml
+      - group: ProdVars
+  - ${{ if ne(variables['Build.SourceBranchName'], 'main') }}:
+      - template: ../../config-infra-dev.yml
+      - group: DevVars
+
+  - name: version
+    value: python-sdk-v2
+
+pool:
+  name: Self-hosted Agents
+  vmImage: windows-latest
+
+stages:
+  - stage: DeployTrainingPipeline
+    displayName: Deploy Training Pipeline
+    jobs:
+      - job: DeployTrainingPipeline
+        timeoutInMinutes: 120
+        steps:
+          # 1. checkout your repo
+          - checkout: self
+
+          # 2. Install Azure ML extension
+          - task: AzureCLI@2
+            displayName: 'Install Azure ML Extension'
+            inputs:
+              azureSubscription: $(ado_service_connection_aml_ws)
+              scriptType: ps
+              scriptLocation: inlineScript
+              inlineScript: |
+                Write-Host "Installing Azure ML CLI extension... $(ado_service_connection_aml_ws)"
+                az extension add --name ml --yes
+                az extension list
+
+          # 3. authenticate & “attach” the AML workspace
+          - task: AzureCLI@2
+            displayName: 'Configure AML workspace'
+            inputs:
+              azureSubscription: $(ado_service_connection_aml_ws)
+              scriptType: ps
+              scriptLocation: inlineScript
+              inlineScript: |
+                Write-Host "Configuring AML workspace: $(aml_workspace) in resource group: $(resource_group)"
+                $subscription_id = az account show --query id -o tsv
+                Write-Host "##vso[task.setvariable variable=AZURE_SUBSCRIPTION_ID]$subscription_id"
+                Write-Host "##vso[task.setvariable variable=AZURE_RESOURCE_GROUP]$(resource_group)"
+                Write-Host "##vso[task.setvariable variable=AZURE_ML_WORKSPACE]$(aml_workspace)"
+                Write-Host "Azure ML environment variables set"
+
+          # 4. create or validate compute
+          - task: AzureCLI@2
+            displayName: 'Ensure AML compute cluster'
+            inputs:
+              azureSubscription: $(ado_service_connection_aml_ws)
+              scriptType: ps
+              scriptLocation: inlineScript
+              inlineScript: |
+                Write-Host "Checking for compute cluster 'cpu-cluster'..."
+                $exists = $false
+                try {
+                  if (az ml compute show --name cpu-cluster --resource-group "$(resource_group)" --workspace-name "$(aml_workspace)" 2>$null) {
+                    Write-Host "Compute cluster exists"
+                    $exists = $true
+                  }
+                } catch { }
+                if (-not $exists) {
+                  Write-Host "Creating compute cluster 'cpu-cluster'..."
+                  az ml compute create `
+                    --name cpu-cluster `
+                    --type amlcompute `
+                    --size Standard_DS3_v2 `
+                    --min-instances 0 `
+                    --max-instances 2 `
+                    --tier low_priority `
+                    --resource-group "$(resource_group)" `
+                    --workspace-name "$(aml_workspace)"
+                }
+
+          # 5. register your conda environment
+          - task: AzureCLI@2
+            displayName: 'Register (or bump) training environment'
+            inputs:
+              azureSubscription: $(ado_service_connection_aml_ws)
+              scriptType: ps
+              scriptLocation: inlineScript
+              inlineScript: |
+                Write-Host "Registering (or bumping) environment 'taxi-train-env'..."
+                az ml environment create `
+                  --name taxi-train-env `
+                  --conda-file "./data-science/environment/train-conda.yml" `
+                  --image mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04 `
+                  --resource-group "$(resource_group)" `
+                  --workspace-name "$(aml_workspace)"
+                Write-Host "Environment registered/bumped to latest version."
+                
+          # 6. register the CSV as a Data Asset
+          - task: AzureCLI@2
+            displayName: 'Register data asset'
+            inputs:
+              azureSubscription: $(ado_service_connection_aml_ws)
+              scriptType: ps
+              scriptLocation: inlineScript
+              inlineScript: |
+                Write-Host "Registering data asset 'taxi-data'..."
+                az ml data create `
+                  --name taxi-data `
+                  --path data/taxi-data.csv `
+                  --type uri_file `
+                  --description "taxi-training-dataset" `
+                  --resource-group "$(resource_group)" `
+                  --workspace-name "$(aml_workspace)"
+
+          # 6.5 Setup local Python venv for SDK run
+          - task: PowerShell@2
+            displayName: 'Setup Python Virtual Environment'
+            inputs:
+              targetType: inline
+              script: |
+                Write-Host "Creating and activating venv..."
+                python -m venv .pipeline-venv
+                & .\.pipeline-venv\Scripts\Activate.ps1
+                Write-Host "Installing packages..."
+                python -m pip install --upgrade pip
+                python -m pip install marshmallow==3.14.0
+                python -m pip install azure-ai-ml==1.0.0 azure-identity==1.10.0 pyyaml==6.0 python-dotenv==1.0.0
+                Write-Host "Installed packages:"
+                python -m pip list
+                deactivate
+
+          # 7. kick off your SDK pipeline
+          - task: PowerShell@2
+            displayName: 'Run training pipeline'
+            env:
+              AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+              AZURE_RESOURCE_GROUP:   $(AZURE_RESOURCE_GROUP)
+              AZURE_ML_WORKSPACE:     $(AZURE_ML_WORKSPACE)
+            inputs:
+              targetType: inline
+              script: |
+                Write-Host "Activating venv..."
+                & .\.pipeline-venv\Scripts\Activate.ps1
+
+                Write-Host "Environment variables available in PowerShell script:"
+                Write-Host "AZURE_SUBSCRIPTION_ID: $env:AZURE_SUBSCRIPTION_ID"
+                Write-Host "AZURE_RESOURCE_GROUP: $env:AZURE_RESOURCE_GROUP"
+                Write-Host "AZURE_ML_WORKSPACE: $env:AZURE_ML_WORKSPACE"
+                
+                Write-Host "Starting training pipeline..."
+                # Use just the environment name without version to always get the latest version
+                # This avoids issues with immutable environments
+                python mlops/azureml/train/run_pipeline.py `
+                  --experiment_name taxi-train-pipeline `
+                  --compute_name cpu-cluster `
+                  --data_name taxi-data@latest `
+                  --environment_name taxi-train-env `
+                  --enable_monitoring $(enable_monitoring) `
+                  --table_name taximonitoring
+
+                deactivate
