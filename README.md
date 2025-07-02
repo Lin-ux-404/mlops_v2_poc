@@ -87,7 +87,15 @@ After deployment, set up appropriate role assignments in your Azure ML workspace
 #### 2.5 Configure Container Registry and Storage Account
 
 1. **Container Registry:** Grant ACRPull role to your compute resources
-2. **Storage Account:** Configure appropriate access settings (for this POC set everything to public)
+   Inside your AML Workspace, go to compute and confidure a system assigned managed identity for your compute and grant it the ACRPull role in your compute resource.
+   ![image](https://github.com/user-attachments/assets/87934887-8ec2-417f-a95f-fddac308f14c)
+
+3. **Storage Account:** Configure appropriate access settings (for this POC set everything to public)
+   ![image](https://github.com/user-attachments/assets/294486db-0e0d-4524-9054-b29ea8b8062d)
+
+   Make sure that storage account key access is enabled!!
+   ![image](https://github.com/user-attachments/assets/1717882a-ff24-4aa4-93e9-465d860b59ce)
+
 
 ### 3. Azure DevOps Setup
 
@@ -123,11 +131,15 @@ git push -u origin dev
    - `gasuni-mlopsv2-rg-sc-prod`
    - `gasuni-mlopsv2-aml-sc-prod`
 
+![image](https://github.com/user-attachments/assets/f6fe84b7-9af5-4e3e-8761-efd9c74f2c2f)
+
 #### 3.3 Set up Variable Groups
 
 Go to Library inside Pipelines. Create variable groups DevVars and ProdVars with the following variables:
 - resource_group
 - workspace_name
+  
+![image](https://github.com/user-attachments/assets/8d48f94c-2f3c-48cb-9668-b9b6284cc20b)
 
 #### 3.4 Create Azure DevOps Pipelines
 
@@ -155,6 +167,9 @@ Edit the pipeline you just created. Add the following variables to the pipeline:
 - subscription_id
 - tenant_id
 - location
+
+![image](https://github.com/user-attachments/assets/060b2a00-9be2-4ec4-bfec-48436c050fe6)
+
 
 ## CI/CD Pipeline Workflow
 
